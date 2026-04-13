@@ -34,10 +34,18 @@ except ImportError as exc:  # pragma: no cover
 try:
     import requests
     from curl_cffi import requests as curl_requests
+    import time as _time
 
     def _curl_get(url, **kwargs):
         kwargs.pop("timeout", None)
-        return curl_requests.get(url, impersonate="chrome", timeout=15, **kwargs)
+        for _attempt in range(3):
+            try:
+                _time.sleep(0.3)  # 请求间短暂延迟，避免被限流
+                return curl_requests.get(url, impersonate="chrome", timeout=30, **kwargs)
+            except Exception:
+                if _attempt == 2:
+                    raise
+                _time.sleep(2)  # 失败后等待更久再重试
 
     requests.get = _curl_get
 except ImportError:

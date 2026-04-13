@@ -81,6 +81,58 @@ def _build_spot_snapshot() -> pd.DataFrame:
     return out
 
 
+def _get_open_and_prev_close(symbol: str, asof: date, spot_df: Optional[pd.DataFrame]) -> Optional[tuple[float, float]]:
+    """获取指定交易日的 open_t 与 close_t_1。
+
+    - 当 asof >= 今天：优先使用实时快照中的 今开/昨收。
+    - 当 asof < 今天：使用历史日线，取 asof 当天开盘 和 前一交易日收盘。
+    """
+    today = datetime.utcnow().date()
+    if asof >= today:
+        if spot_df is None or symbol not in spot_df.index:
+            return None
+        open_t = spot_df.at[symbol, "今开"]
+        close_t_1 = spot_df.at[symbol, "昨收"]
+        if pd.isna(open_t) or pd.isna(close_t_1):
+            return None
+        return float(open_t), float(close_t_1)
+
+    start = (asof - timedelta(days=30)).strftime("%Y%m%d")
+    end = asof.strftime("%Y%m%d")
+    hist = ak.stock_zh_a_hist(
+        symbol=symbol,
+        period="daily",
+        start_date=start,
+        end_date=end,
+        adjust="qfq",
+    )
+    if hist is None or hist.empty:
+        return None
+    if "日期" not in hist.columns or "开盘" not in hist.columns or "收盘" not in hist.columns:
+        return None
+
+    h = hist[["日期", "开盘", "收盘"]].copy()
+    h["日期"] = pd.to_datetime(h["日期"]).dt.date
+    h["开盘"] = pd.to_numeric(h["开盘"], errors="coerce")
+    h["收盘"] = pd.to_numeric(h["收盘"], errors="coerce")
+    h = h.dropna(subset=["开盘", "收盘"]).sort_values("日期")
+    h = h[h["日期"] <= asof]
+    if len(h) < 2:
+        return None
+
+    # asof 当天必须有日线记录，上一行作为 close_t_1
+    today_rows = h[h["日期"] == asof]
+    if today_rows.empty:
+        return None
+    idx = today_rows.index[-1]
+    pos = h.index.get_indexer([idx])[0]
+    if pos <= 0:
+        return None
+    open_t = float(h.iloc[pos]["开盘"])
+    close_t_1 = float(h.iloc[pos - 1]["收盘"])
+    return open_t, close_t_1
+
+
 def _get_recent_closes(symbol: str, asof: date, bars: int = 10) -> Optional[List[float]]:
     """获取指定日期前最近 bars 个日线收盘价（不含当日）。"""
     start = (asof - timedelta(days=90)).strftime("%Y%m%d")
@@ -210,18 +262,16 @@ def _classify_symbol(
 
 def run_selector(symbols: List[str], trade_date: Optional[str], thresholds: Thresholds) -> pd.DataFrame:
     asof = _parse_trade_date(trade_date)
-    spot = _build_spot_snapshot().set_index("代码")
+    today = datetime.utcnow().date()
+    spot = _build_spot_snapshot().set_index("代码") if asof >= today else None
 
     records: List[Dict] = []
     for raw in symbols:
         symbol = str(raw).zfill(6)
-        if symbol not in spot.index:
+        o_c = _get_open_and_prev_close(symbol=symbol, asof=asof, spot_df=spot)
+        if o_c is None:
             continue
-
-        open_t = spot.at[symbol, "今开"]
-        close_t_1 = spot.at[symbol, "昨收"]
-        if pd.isna(open_t) or pd.isna(close_t_1):
-            continue
+        open_t, close_t_1 = o_c
 
         closes = _get_recent_closes(symbol, asof, bars=10)
         if closes is None:
@@ -270,7 +320,12 @@ def main() -> None:
         default=None,
         help="股票代码，逗号分隔，例如: 000001,600519,300750",
     )
-    parser.add_argument("--trade-date", type=str, default=None, help="交易日，格式 YYYY-MM-DD，默认今天")
+    parser.add_argument(
+        "--trade-date",
+        type=str,
+        default=None,
+        help="交易日，格式 YYYY-MM-DD；历史日期会使用当日开盘+前一日收盘进行回放计算",
+    )
     parser.add_argument("--x", type=float, default=None)
     parser.add_argument("--y", type=float, default=None)
     parser.add_argument("--r", type=float, default=None)

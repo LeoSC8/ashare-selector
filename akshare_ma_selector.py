@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 from dataclasses import dataclass, asdict
 from datetime import date, datetime, timedelta
 from typing import Dict, List, Optional, Any
@@ -29,6 +30,18 @@ except ImportError as exc:  # pragma: no cover
     raise SystemExit(
         "未安装 akshare，请先执行: pip install akshare pandas"
     ) from exc
+
+try:
+    import requests
+    from curl_cffi import requests as curl_requests
+
+    def _curl_get(url, **kwargs):
+        kwargs.pop("timeout", None)
+        return curl_requests.get(url, impersonate="chrome", timeout=15, **kwargs)
+
+    requests.get = _curl_get
+except ImportError:
+    pass
 
 
 @dataclass
@@ -364,7 +377,13 @@ def main() -> None:
     )
 
     trade_date = args.trade_date if args.trade_date else config.get("trade_date")
-    out = args.out if args.out else config.get("out", "")
+
+    # 默认输出路径：output/YYYY-MM-DD.csv；--out 优先
+    default_date = trade_date if trade_date else datetime.utcnow().strftime("%Y-%m-%d")
+    default_out = os.path.join("output", f"{default_date}.csv")
+    out = args.out if args.out else (config.get("out") or default_out)
+
+    os.makedirs(os.path.dirname(out), exist_ok=True)
 
     df = run_selector(symbols=symbols, trade_date=trade_date, thresholds=thresholds)
 
@@ -372,10 +391,8 @@ def main() -> None:
         print("未筛选到符合条件的股票。")
         return
 
-    print(df.to_string(index=False))
-    if out:
-        df.to_csv(out, index=False, encoding="utf-8-sig")
-        print(f"已写出结果: {out}")
+    df.to_csv(out, index=False, encoding="utf-8-sig")
+    print(f"已写出结果: {out}")
 
 
 if __name__ == "__main__":

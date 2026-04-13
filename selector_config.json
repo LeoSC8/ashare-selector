@@ -34,7 +34,7 @@
     "000831"
   ],
   "trade_date": null,
-  "out": "",
+  "out": null,
   "thresholds": {
     "x": 0.003,
     "y": 0.0008,
